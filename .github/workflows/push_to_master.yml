@@ -1,0 +1,106 @@
+# Syncs this repo’s commit to the matching branch on ceres-stack (same branch name only).
+# Requires repo secret: CERES_STACK_SYNC_TOKEN (PAT or GitHub App token with contents:write on ceres-stack).
+
+name: Sync submodule to ceres-stack
+
+on:
+  push:
+    branches:
+      - "**"
+
+env:
+  CERES_STACK_REPO: ceres-systems/ceres-stack
+  SUBMODULE_PATH: ceres-identity
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'branch' && github.event.repository.fork == false
+
+    steps:
+      - name: Check matching branch exists on ceres-stack
+        id: stack
+        env:
+          GH_TOKEN: ${{ secrets.CERES_STACK_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::Missing secret CERES_STACK_SYNC_TOKEN"
+            exit 1
+          fi
+          BRANCH='${{ github.ref_name }}'
+          ENCODED=$(jq -rn --arg b "$BRANCH" '$b|@uri')
+          API_ROOT="${GITHUB_API_URL:-https://api.github.com}"
+          URL="${API_ROOT}/repos/${{ env.CERES_STACK_REPO }}/branches/${ENCODED}"
+          CODE=$(curl -sS -o /tmp/ceres_stack_branch_check.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$URL")
+          case "$CODE" in
+            200)
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              ;;
+            404)
+              echo "exists=false" >> "$GITHUB_OUTPUT"
+              echo "No branch '$BRANCH' on ${{ env.CERES_STACK_REPO }}; skipping."
+              ;;
+            401)
+              echo "::error::GitHub API returned 401 when checking ${{ env.CERES_STACK_REPO }} — CERES_STACK_SYNC_TOKEN is missing, revoked, or expired."
+              exit 1
+              ;;
+            403)
+              echo "::error::GitHub API returned 403 when checking ${{ env.CERES_STACK_REPO }} — token cannot read this repository (scope or SSO may be required)."
+              exit 1
+              ;;
+            *)
+              echo "::error::Unexpected HTTP ${CODE} when checking branch on ${{ env.CERES_STACK_REPO }} (expected 200 or 404). Body:"
+              head -c 500 /tmp/ceres_stack_branch_check.json || true
+              echo
+              exit 1
+              ;;
+          esac
+
+      - name: Checkout ceres-stack
+        if: steps.stack.outputs.exists == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CERES_STACK_REPO }}
+          ref: ${{ github.ref_name }}
+          token: ${{ secrets.CERES_STACK_SYNC_TOKEN }}
+          path: ceres-stack
+          submodules: true
+
+      - name: Bump submodule and push
+        if: steps.stack.outputs.exists == 'true'
+        env:
+          BRANCH: ${{ github.ref_name }}
+          NEW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd ceres-stack
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+          git submodule update --init "${{ env.SUBMODULE_PATH }}"
+          git -C "${{ env.SUBMODULE_PATH }}" fetch -q origin "$NEW_SHA"
+          git -C "${{ env.SUBMODULE_PATH }}" checkout -q "$NEW_SHA"
+
+          git add "${{ env.SUBMODULE_PATH }}"
+          if git diff --cached --quiet; then
+            echo "Submodule pointer already at $NEW_SHA; nothing to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: bump ${{ env.SUBMODULE_PATH }} to ${NEW_SHA:0:7}"
+
+          for attempt in 1 2 3 4 5; do
+            git fetch origin "$BRANCH"
+            git rebase "origin/$BRANCH"
+            if git push origin "HEAD:$BRANCH"; then
+              exit 0
+            fi
+            sleep $((attempt * 3))
+          done
+          echo "::error::Push to ceres-stack failed after retries"
+          exit 1
