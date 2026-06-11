@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import uuid
 from functools import lru_cache
 
 from cryptography.hazmat.primitives import serialization
@@ -10,22 +9,17 @@ from jwt.algorithms import RSAAlgorithm
 
 from app.config import settings
 
-_cached_dev_pem: str | None = None
-
 
 def _load_or_generate_private_pem() -> str:
-    global _cached_dev_pem  # pylint: disable=global-statement
     configured = settings.jwt_private_key_pem_value()
     if configured:
         return configured
-    if _cached_dev_pem is None:
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        _cached_dev_pem = private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        ).decode("ascii")
-    return _cached_dev_pem
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("ascii")
 
 
 @lru_cache
@@ -55,7 +49,5 @@ def jwks_document() -> dict:
 
 
 def reset_dev_key_cache_for_tests() -> None:
-    global _cached_dev_pem  # pylint: disable=global-statement
-    _cached_dev_pem = None
     private_key_pem.cache_clear()
     public_key.cache_clear()
