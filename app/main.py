@@ -9,6 +9,7 @@ from redis.asyncio import Redis
 from app.config import settings
 from app.db import engine, init_db_schema
 from app.routers.auth import router as auth_router
+from app.routers.internal import router as internal_router
 from app.routers.well_known import router as well_known_router
 
 
@@ -34,6 +35,7 @@ app = FastAPI(
 )
 
 app.include_router(auth_router)
+app.include_router(internal_router)
 app.include_router(well_known_router)
 
 

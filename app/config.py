@@ -5,6 +5,16 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _secret_value(secret: SecretStr) -> str:
+    return secret.get_secret_value()
+
+
+def _optional_secret_value(secret: SecretStr | None) -> str | None:
+    if secret is None:
+        return None
+    return _secret_value(secret)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CERES_IDENTITY_", extra="ignore")
 
@@ -18,6 +28,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 14
     refresh_jwt_secret: SecretStr = Field(description="HS256 secret for refresh tokens")
+    internal_api_key: SecretStr = Field(description="Shared key for internal admin API")
     redis_refresh_key_prefix: str = "ceres:identity:refresh:"
     redis_session_key_prefix: str = "ceres:identity:session:"
     redis_grants_key_prefix: str = "ceres:identity:grants:"
@@ -54,28 +65,32 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_secrets_and_bootstrap(self) -> Self:
-        if len(self.refresh_jwt_secret.get_secret_value()) < 32:
+        if len(self.refresh_jwt_secret_value()) < 32:
             raise ValueError("CERES_IDENTITY_REFRESH_JWT_SECRET must be at least 32 characters")
+        if len(self.internal_api_key_value()) < 32:
+            raise ValueError("CERES_IDENTITY_INTERNAL_API_KEY must be at least 32 characters")
         if self.bootstrap_seed and self.seed_password is None:
             raise ValueError(
-                "CERES_IDENTITY_SEED_PASSWORD is required when CERES_IDENTITY_BOOTSTRAP_SEED is true"
+                "CERES_IDENTITY_SEED_PASSWORD is required when "
+                "CERES_IDENTITY_BOOTSTRAP_SEED is true"
             )
         return self
 
     def refresh_jwt_secret_value(self) -> str:
-        return self.refresh_jwt_secret.get_secret_value()  # pylint: disable=no-member
+        return _secret_value(self.refresh_jwt_secret)
+
+    def internal_api_key_value(self) -> str:
+        return _secret_value(self.internal_api_key)
 
     def seed_password_value(self) -> str:
         if self.seed_password is None:
             raise RuntimeError(
                 "CERES_IDENTITY_SEED_PASSWORD is required when bootstrap seed creates the user"
             )
-        return self.seed_password.get_secret_value()  # pylint: disable=no-member
+        return _secret_value(self.seed_password)
 
     def jwt_private_key_pem_value(self) -> str | None:
-        if self.jwt_private_key_pem is None:
-            return None
-        return self.jwt_private_key_pem.get_secret_value()  # pylint: disable=no-member
+        return _optional_secret_value(self.jwt_private_key_pem)
 
 
 settings = Settings()  # type: ignore[call-arg]

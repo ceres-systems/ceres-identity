@@ -2,49 +2,16 @@ from __future__ import annotations
 
 import uuid
 
-import fakeredis.aioredis
 import jwt
 import pytest
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.db import get_session
-from app.models.base import Base
 from app.models.user import User
 from app.models.user_grant import UserGrant
 from app.security.jwt_keys import reset_dev_key_cache_for_tests
 from app.security.jwt_tokens import decode_access_token
 from app.security.passwords import hash_password
 from app.services.scopes import site_grant, tenant_grant
-
-
-@pytest.fixture
-async def client():
-    reset_dev_key_cache_for_tests()
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    async def override_get_session():
-        async with session_factory() as session:
-            yield session
-
-    fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-    from app.main import app
-
-    app.dependency_overrides[get_session] = override_get_session
-    app.state.redis = fake_redis
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac, session_factory
-
-    app.dependency_overrides.clear()
-    await engine.dispose()
 
 
 async def _seed_user(session_factory, grants: list[str]) -> tuple[str, str]:

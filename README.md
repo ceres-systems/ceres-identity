@@ -67,7 +67,7 @@ When `CERES_IDENTITY_BOOTSTRAP_SEED=true`:
 1. Creates default user (`CERES_IDENTITY_SEED_EMAIL` / `CERES_IDENTITY_SEED_PASSWORD`)
 2. Grants `tenant:{CERES_SEED_DEFAULT_TENANT_ID}:write`
 
-Align `CERES_SEED_DEFAULT_TENANT_ID` and `CERES_SEED_DEFAULT_SITE_ID` with the API seed in `template.env`. Do not change these UUIDs after first bootstrap.
+Default seed UUIDs are defined in `app/config.py` (shared with ceres-api via `CERES_SEED_DEFAULT_TENANT_ID`). Do not change them after first bootstrap.
 
 ## Development
 
