@@ -15,8 +15,11 @@ from app.schemas.auth import LoginRequest, TokenResponse, UserMe
 from app.security.bearer_auth import AccessPayloadDep, user_id_from_payload
 from app.security.jwt_tokens import decode_refresh_token, mint_refresh_token
 from app.security.passwords import verify_password
-from app.security.refresh_store import delete_refresh_jti, get_refresh_user_id, store_refresh_jti
-from app.services.auth_tokens import mint_user_access_token, scopes_for_user_from_claim
+from app.security.refresh_store import delete_refresh_jti, get_refresh_meta, store_refresh_jti
+from app.security.session_store import create_session, get_session_user_id, revoke_session
+from app.services.auth_tokens import mint_user_access_token
+from app.services.grants import load_active_grant_scopes
+from app.services.grants_cache import cache_user_grants
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
@@ -28,6 +31,10 @@ def _redis(request: Request) -> Redis:
 
 
 RedisDep = Annotated[Redis, Depends(_redis)]
+
+
+def _refresh_ttl_seconds() -> int:
+    return settings.refresh_token_expire_days * 24 * 60 * 60
 
 
 def _refresh_cookie_params(*, max_age: int) -> dict:
@@ -51,6 +58,21 @@ def _clear_refresh_cookie(response: Response) -> None:
     )
 
 
+async def _issue_tokens(
+    redis: Redis,
+    session: AsyncSession,
+    user: User,
+) -> tuple[str, int, str, int]:
+    ttl = _refresh_ttl_seconds()
+    session_id = await create_session(redis, user.id, ttl)
+    grants = await load_active_grant_scopes(session, user.id)
+    await cache_user_grants(redis, user.id, grants, ttl)
+    access_token, expires_in = await mint_user_access_token(session, user, session_id)
+    refresh_token, jti, refresh_ttl = mint_refresh_token(user.id)
+    await store_refresh_jti(redis, jti, user.id, session_id, refresh_ttl)
+    return access_token, expires_in, refresh_token, refresh_ttl
+
+
 @router.post("/login")
 async def login(
     body: LoginRequest,
@@ -65,9 +87,7 @@ async def login(
             detail="Invalid email or password",
         )
 
-    access_token, expires_in = await mint_user_access_token(session, user)
-    refresh_token, jti, ttl = mint_refresh_token(user.id)
-    await store_refresh_jti(redis, jti, user.id, ttl)
+    access_token, expires_in, refresh_token, ttl = await _issue_tokens(redis, session, user)
 
     payload = TokenResponse(access_token=access_token, expires_in=expires_in).model_dump()
     resp = JSONResponse(payload)
@@ -97,15 +117,17 @@ async def refresh_tokens(
             detail="Invalid refresh token",
         ) from exc
 
-    owner = await get_refresh_user_id(redis, jti)
-    if owner is None or owner != sub:
+    meta = await get_refresh_meta(redis, jti)
+    if meta is None or str(meta[0]) != sub:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Refresh token revoked or unknown",
         )
 
+    user_id, old_session_id = meta
     await delete_refresh_jti(redis, jti)
-    user_id = UUID(sub)
+    await revoke_session(redis, old_session_id)
+
     user = await session.get(User, user_id)
     if user is None or not user.is_active:
         raise HTTPException(
@@ -113,9 +135,7 @@ async def refresh_tokens(
             detail="User not found or inactive",
         )
 
-    access_token, expires_in = await mint_user_access_token(session, user)
-    refresh_token, new_jti, ttl = mint_refresh_token(user.id)
-    await store_refresh_jti(redis, new_jti, user.id, ttl)
+    access_token, expires_in, refresh_token, ttl = await _issue_tokens(redis, session, user)
 
     out = JSONResponse(
         TokenResponse(access_token=access_token, expires_in=expires_in).model_dump()
@@ -132,7 +152,10 @@ async def logout(request: Request, redis: RedisDep) -> Response:
         try:
             payload = decode_refresh_token(raw)
             jti = str(payload["jti"])
+            meta = await get_refresh_meta(redis, jti)
             await delete_refresh_jti(redis, jti)
+            if meta is not None:
+                await revoke_session(redis, meta[1])
         except (jwt.InvalidTokenError, jwt.ExpiredSignatureError, KeyError, TypeError):
             pass
     _clear_refresh_cookie(resp)
@@ -140,18 +163,30 @@ async def logout(request: Request, redis: RedisDep) -> Response:
 
 
 @router.get("/me", response_model=UserMe)
-async def me(payload: AccessPayloadDep, session: SessionDep) -> UserMe:
+async def me(
+    payload: AccessPayloadDep,
+    session: SessionDep,
+    redis: RedisDep,
+) -> UserMe:
     user_id = user_id_from_payload(payload)
+    session_id = UUID(str(payload["sid"]))
+    owner = await get_session_user_id(redis, session_id)
+    if owner is None or owner != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session revoked or unknown",
+        )
+
     user = await session.get(User, user_id)
     if user is None or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive",
         )
-    scope_claim = str(payload.get("scope", ""))
+    scopes = await load_active_grant_scopes(session, user_id)
     return UserMe(
         id=user.id,
         email=user.email,
         display_name=user.display_name,
-        scopes=scopes_for_user_from_claim(scope_claim),
+        scopes=scopes,
     )

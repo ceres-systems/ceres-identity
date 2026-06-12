@@ -3,19 +3,13 @@ import uuid
 ADMIN_SCOPE = "ceres:admin"
 
 
-def tenant_scope(tenant_id: uuid.UUID) -> str:
-    return f"tenant:{tenant_id}"
+def tenant_grant(tenant_id: uuid.UUID, action: str = "read") -> str:
+    return f"tenant:{tenant_id}:{action}"
 
 
-def site_scope(site_id: uuid.UUID) -> str:
-    return f"site:{site_id}"
+def site_grant(site_id: uuid.UUID, action: str = "read") -> str:
+    return f"site:{site_id}:{action}"
 
 
-def workspace_scope(workspace_id: uuid.UUID) -> str:
-    return f"workspace:{workspace_id}"
-
-
-def parse_scope_list(scope_claim: str) -> list[str]:
-    if not scope_claim.strip():
-        return []
-    return scope_claim.split()
+def workspace_grant(workspace_id: uuid.UUID, action: str = "read") -> str:
+    return f"workspace:{workspace_id}:{action}"

@@ -7,7 +7,7 @@ from app.config import settings
 from app.models.user import User
 from app.security.passwords import hash_password
 from app.services.grants import ensure_grant
-from app.services.scopes import tenant_scope
+from app.services.scopes import tenant_grant
 
 
 async def ensure_bootstrap_seed(session: AsyncSession) -> None:
@@ -26,4 +26,6 @@ async def ensure_bootstrap_seed(session: AsyncSession) -> None:
         session.add(user)
         await session.flush()
 
-    await ensure_grant(session, user.id, tenant_scope(settings.seed_default_tenant_id))
+    await ensure_grant(
+        session, user.id, tenant_grant(settings.seed_default_tenant_id, "write")
+    )

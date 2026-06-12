@@ -16,17 +16,17 @@ REFRESH_TYP = "refresh"
 def mint_access_token(
     *,
     user_id: uuid.UUID,
+    session_id: uuid.UUID,
     email: str,
     display_name: str,
-    scope_claim: str,
 ) -> tuple[str, int]:
     now = datetime.now(timezone.utc)
     exp = now + timedelta(minutes=settings.access_token_expire_minutes)
     payload: dict[str, Any] = {
         "iss": settings.jwt_issuer,
         "sub": str(user_id),
+        "sid": str(session_id),
         "aud": settings.jwt_audience,
-        "scope": scope_claim,
         "email": email,
         "name": display_name,
         "typ": ACCESS_TYP,
@@ -50,7 +50,7 @@ def decode_access_token(token: str) -> dict[str, Any]:
         algorithms=["RS256"],
         audience=settings.jwt_audience,
         issuer=settings.jwt_issuer,
-        options={"require": ["exp", "sub", "aud", "scope", "typ"]},
+        options={"require": ["exp", "sub", "sid", "aud", "typ"]},
     )
     if payload.get("typ") != ACCESS_TYP:
         raise jwt.InvalidTokenError("Not an access token")

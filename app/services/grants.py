@@ -7,6 +7,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user_grant import UserGrant
+from app.services.grant_normalize import normalize_grants
 
 
 async def load_active_grant_scopes(
@@ -26,6 +27,10 @@ async def load_active_grant_scopes(
 async def ensure_grant(
     session: AsyncSession, user_id: uuid.UUID, scope: str
 ) -> None:
+    normalized = normalize_grants([scope])
+    if not normalized:
+        return
+    scope = normalized[0]
     existing = await session.get(UserGrant, {"user_id": user_id, "scope": scope})
     if existing is None:
         session.add(UserGrant(user_id=user_id, scope=scope))

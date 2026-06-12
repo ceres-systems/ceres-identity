@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 14
     refresh_jwt_secret: SecretStr = Field(description="HS256 secret for refresh tokens")
     redis_refresh_key_prefix: str = "ceres:identity:refresh:"
+    redis_session_key_prefix: str = "ceres:identity:session:"
+    redis_grants_key_prefix: str = "ceres:identity:grants:"
+    redis_user_sessions_key_prefix: str = "ceres:identity:user:"
+    redis_user_refresh_key_suffix: str = ":refresh_jtis"
     refresh_cookie_name: str = "ceres_identity_refresh"
     cookie_secure: bool = False
 

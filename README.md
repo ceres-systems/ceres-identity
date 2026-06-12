@@ -1,24 +1,31 @@
 # Ceres Identity
 
-Console IAM service: user accounts, resource grants, and RS256 JWT issuance for the Ceres stack.
+Console IAM service: user accounts, resource grants, sessions, and RS256 JWT issuance for the Ceres stack.
 
 ## Responsibilities
 
 - Store console user credentials (`users`)
-- Store permission grants as opaque scope strings (`user_grants`)
-- Issue access tokens with `aud` and `scope` claims on login and refresh
-- Expose JWKS for resource servers (e.g. `ceres-api`) to validate tokens
+- Store permission grants (`user_grants`)
+- Manage login sessions in Redis (`sid`)
+- Cache active grants in Redis for `ceres-api`
+- Issue slim access tokens (`sub` + `sid`) on login and refresh
+- Expose JWKS for resource servers to validate tokens
 
 Identity does **not** store tenant/site/workspace hierarchy. Grant scopes reference UUIDs that exist in the API database.
 
-## Scope vocabulary
+## Grant vocabulary
 
-| Scope | Meaning |
+| Grant | Meaning |
 |-------|---------|
-| `tenant:<uuid>` | Tenant and all sites/workspaces under it (enforced by API via hierarchy) |
-| `site:<uuid>` | Site and all workspaces under it |
-| `workspace:<uuid>` | Single workspace |
-| `ceres:admin` | All resources |
+| `ceres:admin` | All actions on all resources |
+| `tenant:<uuid>:read` | Read tenant and child sites/workspaces |
+| `tenant:<uuid>:write` | Read and write under tenant (implies `:read`) |
+| `site:<uuid>:read` | Read site and child workspaces |
+| `site:<uuid>:write` | Read and write under site |
+| `workspace:<uuid>:read` | Read workspace |
+| `workspace:<uuid>:write` | Read and write workspace |
+
+Grants are normalized on write (for example, `:read` is dropped when `:write` exists on the same resource).
 
 ## JWT contract
 
@@ -26,44 +33,41 @@ Identity does **not** store tenant/site/workspace hierarchy. Grant scopes refere
 |-------|-------|
 | `iss` | `ceres-identity` |
 | `sub` | User UUID |
+| `sid` | Session UUID (validated in Redis) |
 | `aud` | `ceres-api` |
-| `scope` | Space-delimited active grants |
 | `email`, `name` | Profile fields |
 
-Access tokens are RS256-signed. Refresh tokens are HS256 cookies (identity-only).
+Access tokens are RS256-signed and do **not** embed grants. Refresh tokens are HS256 cookies (identity-only).
+
+## Sessions and live permission updates
+
+- Each login creates a Redis session (`ceres:identity:session:{sid}`)
+- Active grants are cached at `ceres:identity:grants:{user_id}`
+- `revoke_user_auth()` invalidates grants cache, all sessions, and refresh tokens for a user
 
 ## Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/v1/auth/login` | Email/password → access token + refresh cookie |
-| POST | `/v1/auth/refresh` | Rotate refresh cookie; re-load grants into new access token |
+| POST | `/v1/auth/refresh` | Rotate refresh cookie and session; reload grants |
 | POST | `/v1/auth/logout` | Revoke refresh session |
-| GET | `/v1/auth/me` | Profile + scopes (Bearer access token) |
+| GET | `/v1/auth/me` | Profile + grants from DB (Bearer access token) |
 | GET | `/.well-known/jwks.json` | Public signing keys |
 | GET | `/health` | Health check |
 
 Via nginx: `/api/identity/v1/auth/login`, etc.
+
+OpenAPI docs: `http://localhost:8001/docs`
 
 ## Bootstrap seed
 
 When `CERES_IDENTITY_BOOTSTRAP_SEED=true`:
 
 1. Creates default user (`CERES_IDENTITY_SEED_EMAIL` / `CERES_IDENTITY_SEED_PASSWORD`)
-2. Grants `tenant:{CERES_SEED_DEFAULT_TENANT_ID}`
+2. Grants `tenant:{CERES_SEED_DEFAULT_TENANT_ID}:write`
 
 Align `CERES_SEED_DEFAULT_TENANT_ID` and `CERES_SEED_DEFAULT_SITE_ID` with the API seed in `template.env`. Do not change these UUIDs after first bootstrap.
-
-## Hierarchy resolution (API phase 2)
-
-The API validates tokens without calling identity. Inheritance rules:
-
-- `ceres:admin` → allow all
-- `tenant:T` → allow tenant T, its sites, and their workspaces
-- `site:S` → allow site S and its workspaces
-- `workspace:W` → allow workspace W only
-
-Example grants `tenant:tenantA` + `site:siteB1` allow siteA1, siteA2 (via tenantA) and siteB1, but not siteB2.
 
 ## Development
 
@@ -74,9 +78,3 @@ pytest
 ```
 
 Docker Compose runs identity on port 8001 as service `identity`.
-
-## Phase 2
-
-- `ceres-api` validates identity JWTs and replaces `console_users` / `console_visibility`
-- `ceres-console` login targets `/api/identity/v1/auth/*`
-- API orchestrates grant management when inviting users to tenants/sites
