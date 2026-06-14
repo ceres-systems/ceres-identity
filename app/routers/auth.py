@@ -11,7 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db import get_session
 from app.models.user import User
-from app.schemas.auth import LoginRequest, TokenResponse, UserMe
+from app.schemas.auth import (
+    LoginRequest,
+    PasswordChangeRequest,
+    ProfileUpdateRequest,
+    TokenResponse,
+    UserMe,
+)
 from app.security.bearer_auth import AccessPayloadDep, user_id_from_payload
 from app.security.jwt_tokens import decode_refresh_token, mint_refresh_token
 from app.security.passwords import verify_password
@@ -20,6 +26,7 @@ from app.security.session_store import create_session, get_session_user_id, revo
 from app.services.auth_tokens import mint_user_access_token
 from app.services.grants import load_active_grant_scopes
 from app.services.grants_cache import cache_user_grants
+from app.services.profile import change_user_password, update_user_profile
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
@@ -162,12 +169,11 @@ async def logout(request: Request, redis: RedisDep) -> Response:
     return resp
 
 
-@router.get("/me", response_model=UserMe)
-async def me(
-    payload: AccessPayloadDep,
-    session: SessionDep,
-    redis: RedisDep,
-) -> UserMe:
+async def _load_authenticated_user(
+    payload: dict,
+    session: AsyncSession,
+    redis: Redis,
+) -> tuple[User, UUID]:
     user_id = user_id_from_payload(payload)
     session_id = UUID(str(payload["sid"]))
     owner = await get_session_user_id(redis, session_id)
@@ -183,10 +189,54 @@ async def me(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive",
         )
-    scopes = await load_active_grant_scopes(session, user_id)
+    return user, session_id
+
+
+async def _user_me(session: AsyncSession, user: User) -> UserMe:
+    scopes = await load_active_grant_scopes(session, user.id)
     return UserMe(
         id=user.id,
         email=user.email,
         display_name=user.display_name,
         scopes=scopes,
     )
+
+
+@router.get("/me", response_model=UserMe)
+async def me(
+    payload: AccessPayloadDep,
+    session: SessionDep,
+    redis: RedisDep,
+) -> UserMe:
+    user, _ = await _load_authenticated_user(payload, session, redis)
+    return await _user_me(session, user)
+
+
+@router.patch("/me", response_model=UserMe)
+async def update_me(
+    body: ProfileUpdateRequest,
+    payload: AccessPayloadDep,
+    session: SessionDep,
+    redis: RedisDep,
+) -> UserMe:
+    user, _ = await _load_authenticated_user(payload, session, redis)
+    updated = await update_user_profile(session, user, body)
+    return await _user_me(session, updated)
+
+
+@router.patch("/password", status_code=status.HTTP_204_NO_CONTENT)
+async def update_password(
+    body: PasswordChangeRequest,
+    payload: AccessPayloadDep,
+    session: SessionDep,
+    redis: RedisDep,
+) -> Response:
+    user, session_id = await _load_authenticated_user(payload, session, redis)
+    await change_user_password(
+        session,
+        redis,
+        user,
+        body,
+        current_session_id=session_id,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

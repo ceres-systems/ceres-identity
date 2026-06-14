@@ -67,3 +67,20 @@ async def revoke_refresh_for_user(redis: Redis, user_id: uuid.UUID) -> None:
         pipe.delete(_key(jti))
     pipe.delete(_user_refresh_set_key(user_id))
     await redis_pipeline_execute(pipe)
+
+
+async def revoke_refresh_for_user_except_session(
+    redis: Redis, user_id: uuid.UUID, *, except_session_id: uuid.UUID
+) -> None:
+    jtis = await redis_smembers(redis, _user_refresh_set_key(user_id))
+    if not jtis:
+        return
+    keep = str(except_session_id)
+    for jti in jtis:
+        meta = await get_refresh_meta(redis, jti)
+        if meta is None:
+            await redis_srem(redis, _user_refresh_set_key(user_id), jti)
+            continue
+        if str(meta[1]) == keep:
+            continue
+        await delete_refresh_jti(redis, jti)

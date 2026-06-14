@@ -48,3 +48,19 @@ async def revoke_all_user_sessions(redis: Redis, user_id: uuid.UUID) -> None:
         pipe.delete(f"{settings.redis_session_key_prefix}{sid}")
     pipe.delete(_user_sessions_key(user_id))
     await redis_pipeline_execute(pipe)
+
+
+async def revoke_other_user_sessions(
+    redis: Redis, user_id: uuid.UUID, *, except_session_id: uuid.UUID
+) -> None:
+    session_ids = await redis_smembers(redis, _user_sessions_key(user_id))
+    if not session_ids:
+        return
+    keep = str(except_session_id)
+    pipe = redis.pipeline()
+    for sid in session_ids:
+        if sid == keep:
+            continue
+        pipe.delete(f"{settings.redis_session_key_prefix}{sid}")
+        pipe.srem(_user_sessions_key(user_id), sid)
+    await redis_pipeline_execute(pipe)
