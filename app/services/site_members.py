@@ -9,7 +9,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
-from app.schemas.internal import SiteMemberCreate, SiteMemberRead, SiteMemberUpdate
+from app.schemas.internal import (
+    SiteMemberAdd,
+    SiteMemberCreate,
+    SiteMemberRead,
+    SiteMemberUpdate,
+)
 from app.security.passwords import hash_password
 from app.services.grants import (
     get_site_member_grant_action,
@@ -19,6 +24,14 @@ from app.services.grants import (
     set_site_grant,
 )
 from app.services.grants_cache import revoke_user_auth
+
+# Temporary until invite/onboarding sets credentials; login still requires 8+ chars.
+INVITED_USER_DEFAULT_PASSWORD = "1234"
+
+
+def _display_name_from_email(email: str) -> str:
+    local = email.split("@", 1)[0].strip()
+    return local or email
 
 
 def _to_read(user: User, grant_action: Literal["read", "write"]) -> SiteMemberRead:
@@ -54,15 +67,41 @@ async def create_site_member(
 
     user = User(
         email=body.email,
-        password_hash=hash_password(body.password),
-        display_name=body.display_name,
-        is_active=body.is_active,
+        password_hash=hash_password(INVITED_USER_DEFAULT_PASSWORD),
+        display_name=_display_name_from_email(body.email),
+        is_active=True,
     )
     session.add(user)
     await session.flush()
     await set_site_grant(session, user.id, body.site_id, body.grant_action)
     await session.commit()
     await session.refresh(user)
+    return _to_read(user, body.grant_action)
+
+
+async def add_site_member(
+    session: AsyncSession,
+    redis: Redis,
+    body: SiteMemberAdd,
+) -> SiteMemberRead:
+    user = await session.scalar(select(User).where(User.email == body.email))
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    current_action = await get_site_member_grant_action(session, user.id, body.site_id)
+    if current_action is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Already a member of this site",
+        )
+
+    await set_site_grant(session, user.id, body.site_id, body.grant_action)
+    await session.commit()
+    await session.refresh(user)
+    await revoke_user_auth(redis, user.id)
     return _to_read(user, body.grant_action)
 
 
@@ -84,11 +123,6 @@ async def update_site_member(
         )
 
     changed_auth = False
-    if body.display_name is not None:
-        user.display_name = body.display_name
-    if body.password is not None:
-        user.password_hash = hash_password(body.password)
-        changed_auth = True
     if body.is_active is not None and body.is_active != user.is_active:
         user.is_active = body.is_active
         changed_auth = True

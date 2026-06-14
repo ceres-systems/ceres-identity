@@ -6,9 +6,15 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
-from app.schemas.internal import SiteMemberCreate, SiteMemberRead, SiteMemberUpdate
+from app.schemas.internal import (
+    SiteMemberAdd,
+    SiteMemberCreate,
+    SiteMemberRead,
+    SiteMemberUpdate,
+)
 from app.security.internal_auth import verify_internal_api_key
 from app.services.site_members import (
+    add_site_member,
     create_site_member,
     delete_site_member,
     list_site_members,
@@ -50,6 +56,19 @@ async def post_site_member(
     redis: RedisDep,
 ) -> SiteMemberRead:
     return await create_site_member(session, redis, body)
+
+
+@router.post(
+    "/site-members/add",
+    response_model=SiteMemberRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_site_member_add(
+    body: SiteMemberAdd,
+    session: SessionDep,
+    redis: RedisDep,
+) -> SiteMemberRead:
+    return await add_site_member(session, redis, body)
 
 
 @router.patch("/site-members/{user_id}", response_model=SiteMemberRead)
