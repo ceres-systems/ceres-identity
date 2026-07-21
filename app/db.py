@@ -1,5 +1,7 @@
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -28,7 +30,32 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+async def _ensure_database_exists() -> None:
+    url = make_url(settings.database_url)
+    db_name = url.database
+    if not db_name:
+        return
+
+    admin_engine = create_async_engine(
+        url.set(database="postgres"),
+        isolation_level="AUTOCOMMIT",
+        echo=False,
+    )
+    try:
+        async with admin_engine.connect() as conn:
+            exists = await conn.scalar(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                {"name": db_name},
+            )
+            if not exists:
+                quoted = db_name.replace('"', '""')
+                await conn.execute(text(f'CREATE DATABASE "{quoted}"'))
+    finally:
+        await admin_engine.dispose()
+
+
 async def init_db_schema() -> None:
+    await _ensure_database_exists()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await ensure_bootstrap_data()
