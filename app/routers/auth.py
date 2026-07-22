@@ -1,19 +1,21 @@
 from typing import Annotated
 from uuid import UUID
 
-import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
+import jwt
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_session
+from app.models.site_pin import SitePin
 from app.models.user import User
 from app.schemas.auth import (
     LoginRequest,
     PasswordChangeRequest,
+    PinLoginRequest,
     ProfileUpdateRequest,
     TokenResponse,
     UserMe,
@@ -21,10 +23,19 @@ from app.schemas.auth import (
 from app.security.bearer_auth import AccessPayloadDep, user_id_from_payload
 from app.security.jwt_tokens import decode_refresh_token, mint_refresh_token
 from app.security.passwords import verify_password
-from app.security.refresh_store import delete_refresh_jti, get_refresh_meta, store_refresh_jti
-from app.security.session_store import create_session, get_session_user_id, revoke_session
+from app.security.pins import hash_pin
+from app.security.refresh_store import (
+    delete_refresh_jti,
+    get_refresh_meta,
+    store_refresh_jti,
+)
+from app.security.session_store import (
+    create_session,
+    get_session_user_id,
+    revoke_session,
+)
 from app.services.auth_tokens import mint_user_access_token
-from app.services.grants import load_active_grant_scopes
+from app.services.grants import get_site_member_grant_action, load_active_grant_scopes
 from app.services.grants_cache import cache_user_grants
 from app.services.profile import change_user_password, update_user_profile
 
@@ -92,6 +103,47 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
+        )
+
+    access_token, expires_in, refresh_token, ttl = await _issue_tokens(redis, session, user)
+
+    payload = TokenResponse(access_token=access_token, expires_in=expires_in).model_dump()
+    resp = JSONResponse(payload)
+    resp.set_cookie(value=refresh_token, **_refresh_cookie_params(max_age=ttl))
+    return resp
+
+
+@router.post("/pin")
+async def login_with_pin(
+    body: PinLoginRequest,
+    session: SessionDep,
+    redis: RedisDep,
+) -> JSONResponse:
+    """Kiosk PIN login. PIN is unique per site; site_id is required."""
+    digest = hash_pin(body.pin, site_id=body.site_id)
+    site_pin = await session.scalar(
+        select(SitePin).where(
+            SitePin.site_id == body.site_id,
+            SitePin.pin_hmac == digest,
+        )
+    )
+    if site_pin is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid PIN",
+        )
+
+    user = await session.get(User, site_pin.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid PIN",
+        )
+    # Belt-and-braces: PIN row should only exist while membership does.
+    if await get_site_member_grant_action(session, user.id, body.site_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid PIN",
         )
 
     access_token, expires_in, refresh_token, ttl = await _issue_tokens(redis, session, user)

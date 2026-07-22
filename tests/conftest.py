@@ -30,7 +30,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db import get_session
-from app.models.base import Base
+from app.models import Base  # registers tables on metadata
 from app.security.jwt_keys import reset_dev_key_cache_for_tests
 
 

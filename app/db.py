@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import (
 
 from app.config import settings
 from app.db_seed import ensure_bootstrap_seed
-from app.models.base import Base
+from app.models import Base  # registers User, UserGrant, SitePin on metadata
 
 engine = create_async_engine(
     settings.database_url,

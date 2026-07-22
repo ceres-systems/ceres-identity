@@ -1,5 +1,5 @@
-import uuid
 from typing import TYPE_CHECKING
+import uuid
 
 from sqlalchemy import Boolean, String, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship

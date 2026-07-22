@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
 from app.schemas.internal import (
+    SetUserPinRequest,
     SiteMemberAdd,
     SiteMemberCreate,
     SiteMemberRead,
@@ -18,6 +19,7 @@ from app.services.site_members import (
     create_site_member,
     delete_site_member,
     list_site_members,
+    set_user_pin,
     update_site_member,
 )
 
@@ -79,6 +81,16 @@ async def patch_site_member(
     redis: RedisDep,
 ) -> SiteMemberRead:
     return await update_site_member(session, redis, user_id, body)
+
+
+@router.put("/users/{user_id}/pin", status_code=status.HTTP_204_NO_CONTENT)
+async def put_user_pin(
+    user_id: UUID,
+    body: SetUserPinRequest,
+    session: SessionDep,
+    redis: RedisDep,
+) -> None:
+    await set_user_pin(session, redis, user_id, body.site_id, body.pin)
 
 
 @router.delete("/site-members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)

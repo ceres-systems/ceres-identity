@@ -1,5 +1,5 @@
-import uuid
 from typing import Self
+import uuid
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 14
     refresh_jwt_secret: SecretStr = Field(description="HS256 secret for refresh tokens")
     internal_api_key: SecretStr = Field(description="Shared key for internal admin API")
+    pin_hmac_secret: SecretStr | None = Field(
+        default=None,
+        description=(
+            "HMAC secret for kiosk PIN lookup. When unset, derived as "
+            "'ceres-pin-hmac:' + refresh_jwt_secret (see security/pins.py)."
+        ),
+    )
     redis_refresh_key_prefix: str = "ceres:identity:refresh:"
     redis_session_key_prefix: str = "ceres:identity:session:"
     redis_grants_key_prefix: str = "ceres:identity:grants:"
@@ -81,6 +88,9 @@ class Settings(BaseSettings):
 
     def internal_api_key_value(self) -> str:
         return _secret_value(self.internal_api_key)
+
+    def pin_hmac_secret_value(self) -> str | None:
+        return _optional_secret_value(self.pin_hmac_secret)
 
     def seed_password_value(self) -> str:
         if self.seed_password is None:

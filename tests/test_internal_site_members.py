@@ -170,3 +170,120 @@ async def test_add_duplicate_site_membership_returns_409(client) -> None:
     )
     assert add.status_code == 409
     assert add.json()["detail"] == "Already a member of this site"
+
+
+@pytest.mark.asyncio
+async def test_site_pin_unique_per_site_and_reusable_across_sites(client) -> None:
+    ac, _ = client
+    site_a = uuid.uuid4()
+    site_b = uuid.uuid4()
+
+    user_a = await ac.post(
+        "/internal/v1/site-members",
+        headers=INTERNAL_HEADERS,
+        json={"site_id": str(site_a), "email": "a@localhost", "grant_action": "write"},
+    )
+    assert user_a.status_code == 201
+    user_a_id = user_a.json()["id"]
+
+    user_b = await ac.post(
+        "/internal/v1/site-members",
+        headers=INTERNAL_HEADERS,
+        json={"site_id": str(site_a), "email": "b@localhost", "grant_action": "write"},
+    )
+    assert user_b.status_code == 201
+    user_b_id = user_b.json()["id"]
+
+    set_a = await ac.patch(
+        f"/internal/v1/site-members/{user_a_id}",
+        headers=INTERNAL_HEADERS,
+        json={"site_id": str(site_a), "kiosk_pin": "1234"},
+    )
+    assert set_a.status_code == 200
+    assert set_a.json()["has_kiosk_pin"] is True
+
+    clash = await ac.patch(
+        f"/internal/v1/site-members/{user_b_id}",
+        headers=INTERNAL_HEADERS,
+        json={"site_id": str(site_a), "kiosk_pin": "1234"},
+    )
+    assert clash.status_code == 409
+
+    # Same digits OK on another site for a different membership.
+    add_b = await ac.post(
+        "/internal/v1/site-members/add",
+        headers=INTERNAL_HEADERS,
+        json={"site_id": str(site_b), "email": "b@localhost", "grant_action": "write"},
+    )
+    assert add_b.status_code == 201
+    set_b = await ac.patch(
+        f"/internal/v1/site-members/{user_b_id}",
+        headers=INTERNAL_HEADERS,
+        json={"site_id": str(site_b), "kiosk_pin": "1234"},
+    )
+    assert set_b.status_code == 200
+    assert set_b.json()["has_kiosk_pin"] is True
+
+
+@pytest.mark.asyncio
+async def test_pin_login_requires_site_and_succeeds(client) -> None:
+    ac, _ = client
+    site_id = uuid.uuid4()
+    create = await ac.post(
+        "/internal/v1/site-members",
+        headers=INTERNAL_HEADERS,
+        json={"site_id": str(site_id), "email": "pin@localhost", "grant_action": "write"},
+    )
+    assert create.status_code == 201
+    user_id = create.json()["id"]
+
+    await ac.patch(
+        f"/internal/v1/site-members/{user_id}",
+        headers=INTERNAL_HEADERS,
+        json={"site_id": str(site_id), "kiosk_pin": "4242"},
+    )
+
+    missing_site = await ac.post("/v1/auth/pin", json={"pin": "4242"})
+    assert missing_site.status_code == 422
+
+    wrong_site = await ac.post(
+        "/v1/auth/pin",
+        json={"site_id": str(uuid.uuid4()), "pin": "4242"},
+    )
+    assert wrong_site.status_code == 401
+
+    ok = await ac.post(
+        "/v1/auth/pin",
+        json={"site_id": str(site_id), "pin": "4242"},
+    )
+    assert ok.status_code == 200
+    assert "access_token" in ok.json()
+
+
+@pytest.mark.asyncio
+async def test_removing_membership_clears_site_pin(client) -> None:
+    ac, _ = client
+    site_id = uuid.uuid4()
+    create = await ac.post(
+        "/internal/v1/site-members",
+        headers=INTERNAL_HEADERS,
+        json={"site_id": str(site_id), "email": "gone@localhost", "grant_action": "write"},
+    )
+    user_id = create.json()["id"]
+    await ac.patch(
+        f"/internal/v1/site-members/{user_id}",
+        headers=INTERNAL_HEADERS,
+        json={"site_id": str(site_id), "kiosk_pin": "9999"},
+    )
+
+    delete = await ac.delete(
+        f"/internal/v1/site-members/{user_id}?site_id={site_id}",
+        headers=INTERNAL_HEADERS,
+    )
+    assert delete.status_code == 204
+
+    login = await ac.post(
+        "/v1/auth/pin",
+        json={"site_id": str(site_id), "pin": "9999"},
+    )
+    assert login.status_code == 401

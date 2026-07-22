@@ -1,5 +1,5 @@
-import uuid
 from typing import Self
+import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -15,6 +15,20 @@ class LoginRequest(BaseModel):
         if "@" not in s:
             raise ValueError("Invalid email")
         return s.lower()
+
+
+class PinLoginRequest(BaseModel):
+    """Kiosk PIN login. PIN is unique per site — site_id selects the namespace."""
+
+    site_id: uuid.UUID
+    pin: str = Field(min_length=4, max_length=4)
+
+    @field_validator("pin")
+    @classmethod
+    def digits_only(cls, v: str) -> str:
+        if not v.isdigit():
+            raise ValueError("PIN must be exactly 4 digits")
+        return v
 
 
 class TokenResponse(BaseModel):
